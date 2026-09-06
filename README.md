@@ -205,6 +205,9 @@ PGMQ_TEST_DSN='postgresql://postgres:postgres@localhost:5434/postgres' \
 - `example/pool_example.dart` — pool + batch + long-poll worker
 - `example/transaction_example.dart` — `runTx` with `Pgmq(tx)`
 - `example/topics_fifo_example.dart` — FIFO groups and topic routing
+- `example/pgmq_flutter_demo/` — Flutter app (mobile/desktop) with a UI and
+  a full-API automated sweep (`flutter test`), proving the package from a
+  real consumer's dependency graph
 
 ## Reference
 
