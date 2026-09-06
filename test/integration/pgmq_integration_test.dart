@@ -233,13 +233,31 @@ void main() {
 
       group('fifo', () {
         test('grouped reads respect groups', () async {
+          // Two queues: the batch read leases group 'a' for its VT, so the
+          // heads assertion runs on an independent queue.
           final q = _queue('fifo');
+          final qh = _queue('fifo_heads');
           await pgmq.createQueue(q);
+          await pgmq.createQueue(qh);
           try {
             await pgmq.createFifoIndex(q);
-            await pgmq.send(q, {'n': 1}, headers: {'x-pgmq-group': 'a'});
-            await pgmq.send(q, {'n': 2}, headers: {'x-pgmq-group': 'b'});
-            await pgmq.send(q, {'n': 3}, headers: {'x-pgmq-group': 'a'});
+            for (final target in [q, qh]) {
+              await pgmq.send(
+                target,
+                {'n': 1},
+                headers: {'x-pgmq-group': 'a'},
+              );
+              await pgmq.send(
+                target,
+                {'n': 2},
+                headers: {'x-pgmq-group': 'b'},
+              );
+              await pgmq.send(
+                target,
+                {'n': 3},
+                headers: {'x-pgmq-group': 'a'},
+              );
+            }
 
             final batch = await pgmq.readGrouped(q, qty: 2);
             expect(batch, hasLength(2));
@@ -248,13 +266,14 @@ void main() {
               {'a'},
             );
 
-            final heads = await pgmq.readGroupedHead(q, qty: 10);
+            final heads = await pgmq.readGroupedHead(qh, qty: 10);
             expect(
               heads.map((m) => m.headers?['x-pgmq-group']).toSet(),
               containsAll({'a', 'b'}),
             );
           } finally {
             await pgmq.dropQueue(q);
+            await pgmq.dropQueue(qh);
           }
         });
       });
@@ -277,7 +296,11 @@ void main() {
             );
             expect(fanout, greaterThanOrEqualTo(1));
             final rows = await pgmq.read(q);
-            expect(rows.map((m) => m.message), contains({'id': 1}));
+            // NB: decoded jsonb maps need deep-equality; Map.== is identity.
+            expect(
+              rows.map((m) => m.message),
+              contains(equals({'id': 1})),
+            );
 
             expect(await pgmq.unbindTopic('orders.*', q), isTrue);
           } finally {
