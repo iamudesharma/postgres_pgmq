@@ -1,0 +1,19 @@
+.dart_tool/
+.build/
+doc/api/
+coverage/
+*.log
+
+# Pub
+.pub-cache/
+.pub/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+.DS_Store
+
+# Test artifacts
+.test_cache/

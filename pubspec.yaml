@@ -1,0 +1,25 @@
+name: postgres_pgmq
+description: >-
+  Idiomatic Dart client for Postgres Message Queue (PGMQ) built on top of
+  package:postgres. Accepts an existing Session (Connection, Pool, TxSession)
+  and exposes the full PGMQ SQL API with strongly typed models.
+version: 0.1.0
+repository: https://github.com/pgmq/postgres_pgmq
+issue_tracker: https://github.com/pgmq/postgres_pgmq/issues
+homepage: https://github.com/pgmq/pgmq
+
+environment:
+  sdk: ^3.4.0
+
+dependencies:
+  postgres: ^3.5.0
+
+dev_dependencies:
+  lints: ^5.0.0
+  test: ^1.25.0
+
+topics:
+  - postgres
+  - pgmq
+  - queue
+  - messaging
