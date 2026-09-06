@@ -17,3 +17,6 @@ build/
 
 # Test artifacts
 .test_cache/
+
+# Pub lockfile (libraries do not commit this)
+pubspec.lock
