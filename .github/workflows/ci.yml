@@ -53,3 +53,33 @@ jobs:
           sdk: stable
       - run: dart pub get
       - run: dart test --tags integration
+
+  flutter-demo:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: ghcr.io/pgmq/pg18-pgmq:latest
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 30
+    env:
+      PGMQ_TEST_DSN: postgresql://postgres:postgres@localhost:5432/postgres?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: flutter pub get
+        working-directory: example/pgmq_flutter_demo
+      - run: flutter analyze
+        working-directory: example/pgmq_flutter_demo
+      - run: flutter test
+        working-directory: example/pgmq_flutter_demo
