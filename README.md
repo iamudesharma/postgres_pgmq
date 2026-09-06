@@ -1,5 +1,7 @@
 # postgres_pgmq
 
+[![CI](https://github.com/iamudesharma/postgres_pgmq/actions/workflows/ci.yml/badge.svg)](https://github.com/iamudesharma/postgres_pgmq/actions/workflows/ci.yml)
+
 Idiomatic Dart client for [Postgres Message Queue (PGMQ)](https://github.com/pgmq/pgmq),
 built on top of [`package:postgres`](https://pub.dev/packages/postgres).
 
