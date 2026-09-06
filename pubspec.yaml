@@ -4,9 +4,9 @@ description: >-
   package:postgres. Accepts an existing Session (Connection, Pool, TxSession)
   and exposes the full PGMQ SQL API with strongly typed models.
 version: 0.1.0
-repository: https://github.com/pgmq/postgres_pgmq
-issue_tracker: https://github.com/pgmq/postgres_pgmq/issues
-homepage: https://github.com/pgmq/pgmq
+repository: https://github.com/iamudesharma/postgres_pgmq
+issue_tracker: https://github.com/iamudesharma/postgres_pgmq/issues
+homepage: https://github.com/iamudesharma/postgres_pgmq
 
 environment:
   sdk: ^3.4.0
