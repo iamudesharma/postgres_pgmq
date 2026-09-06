@@ -6,6 +6,9 @@ analyzer:
   errors:
     missing_required_param: error
     missing_return: error
+  exclude:
+    # Separate Flutter package with its own analysis (see flutter-demo job).
+    - example/pgmq_flutter_demo/**
 
 linter:
   rules:
