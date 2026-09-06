@@ -11,6 +11,8 @@ Future<void> main() async {
       username: 'postgres',
       password: 'postgres',
     ),
+    // The official PGMQ image does not enable SSL.
+    settings: const ConnectionSettings(sslMode: SslMode.disable),
   );
 
   try {

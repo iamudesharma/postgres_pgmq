@@ -43,6 +43,10 @@ docker run -d --name pgmq -e POSTGRES_PASSWORD=postgres -p 5432:5432 \
 # or: docker compose up -d
 ```
 
+> The official PGMQ image does not enable SSL, so local connections need
+> `ConnectionSettings(sslMode: SslMode.disable)` (as in the examples) or
+> `?sslmode=disable` on connection-string URLs.
+
 ## Usage
 
 ### Queues

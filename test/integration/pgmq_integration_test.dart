@@ -19,9 +19,35 @@ import 'package:test/test.dart';
 /// ```
 ///
 /// Without `PGMQ_TEST_DSN` the whole suite is skipped.
+///
+/// The official PGMQ image does not enable SSL, so a plain DSN connects with
+/// SSL disabled. To override, add `?sslmode=require` (or `verify-ca` /
+/// `verify-full`) to the DSN, which is honored as-is.
 final String _dsn = Platform.environment['PGMQ_TEST_DSN'] ?? '';
 
-Future<Connection> _open() => Connection.openFromUrl(_dsn);
+Future<Connection> _open() {
+  final uri = Uri.parse(_dsn);
+  if (uri.queryParameters.containsKey('sslmode')) {
+    return Connection.openFromUrl(_dsn);
+  }
+  final userInfo = uri.userInfo.split(':');
+  final username = userInfo.firstWhere(
+    (s) => s.isNotEmpty,
+    orElse: () => 'postgres',
+  );
+  return Connection.open(
+    Endpoint(
+      host: uri.host.isEmpty ? 'localhost' : uri.host,
+      port: uri.hasPort ? uri.port : 5432,
+      database: uri.pathSegments.isEmpty ? 'postgres' : uri.pathSegments.last,
+      username: Uri.decodeComponent(username),
+      password: userInfo.length > 1
+          ? Uri.decodeComponent(userInfo.sublist(1).join(':'))
+          : null,
+    ),
+    settings: const ConnectionSettings(sslMode: SslMode.disable),
+  );
+}
 
 String _queue(String suffix) =>
     'dart_it_${suffix}_${DateTime.now().microsecondsSinceEpoch % 100000}';
@@ -30,18 +56,19 @@ void main() {
   group(
     'pgmq integration',
     () {
-      late Connection connection;
+      Connection? connection;
       late Pgmq pgmq;
 
       setUpAll(() async {
         connection = await _open();
-        pgmq = Pgmq(connection);
+        pgmq = Pgmq(connection!);
         await pgmq.ensureExtension();
         expect(await pgmq.extensionExists(), isTrue);
       });
 
       tearDownAll(() async {
-        await connection.close();
+        // Nullable: setUpAll may have failed before connecting.
+        await connection?.close();
       });
 
       group('queue lifecycle', () {
@@ -264,7 +291,7 @@ void main() {
           final q = _queue('tx');
           await pgmq.createQueue(q);
           try {
-            await connection.runTx((tx) async {
+            await connection!.runTx((tx) async {
               final txPgmq = Pgmq(tx);
               await txPgmq.send(q, {'n': 1});
               // Visible inside the transaction.

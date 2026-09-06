@@ -45,7 +45,7 @@ jobs:
           --health-timeout 2s
           --health-retries 30
     env:
-      PGMQ_TEST_DSN: postgresql://postgres:postgres@localhost:5432/postgres
+      PGMQ_TEST_DSN: postgresql://postgres:postgres@localhost:5432/postgres?sslmode=disable
     steps:
       - uses: actions/checkout@v4
       - uses: dart-lang/setup-dart@v1

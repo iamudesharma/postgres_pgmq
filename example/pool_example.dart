@@ -13,7 +13,11 @@ Future<void> main() async {
         password: 'postgres',
       ),
     ],
-    settings: const PoolSettings(maxConnectionCount: 5),
+    settings: const PoolSettings(
+      maxConnectionCount: 5,
+      // The official PGMQ image does not enable SSL.
+      sslMode: SslMode.disable,
+    ),
   );
 
   try {
