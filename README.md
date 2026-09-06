@@ -188,6 +188,15 @@ PGMQ_TEST_DSN='postgresql://postgres:postgres@localhost:5432/postgres' \
   dart test --tags integration
 ```
 
+If host port 5432 is already taken (e.g. a local Postgres), start the
+container on another port and point the DSN at it:
+
+```sh
+PGMQ_HOST_PORT=5434 docker compose up -d
+PGMQ_TEST_DSN='postgresql://postgres:postgres@localhost:5434/postgres' \
+  dart test --tags integration
+```
+
 ## Examples
 
 - `example/connection_example.dart` — single connection basics
