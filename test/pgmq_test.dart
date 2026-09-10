@@ -191,7 +191,7 @@ void main() {
       expect(await pgmq.sendBatch('q', <Map<String, dynamic>>[]), isEmpty);
       expect(await pgmq.deleteBatch('q', []), isEmpty);
       expect(await pgmq.archiveBatch('q', []), isEmpty);
-      expect(await pgmq.setVtBatch('q', []), isEmpty);
+      expect(await pgmq.setVisibilityTimeoutBatch('q', []), isEmpty);
       expect(
         await pgmq.sendBatchTopic('key', <Map<String, dynamic>>[]),
         isEmpty,
@@ -273,18 +273,19 @@ void main() {
       expect(session.lastParams['headers'], isA<TypedValue>());
     });
 
-    test('setVt uses int vs timestamptz overloads', () async {
+    test('setVisibilityTimeout uses int vs timestamptz overloads', () async {
       final session = FakeSession();
       session.handlers.add((sql) {
         expect(sql, contains('pgmq.set_vt('));
         return emptyResult();
       });
       final pgmq = Pgmq(session);
-      await pgmq.setVt('q', 1, delay: const Duration(seconds: 60));
+      await pgmq.setVisibilityTimeout('q', 1,
+          delay: const Duration(seconds: 60));
       expect(session.lastSql, contains('@vt:int'));
       expect(session.lastParams['vt'], 60);
 
-      await pgmq.setVt('q', 1, visibleAt: DateTime.utc(2030));
+      await pgmq.setVisibilityTimeout('q', 1, visibleAt: DateTime.utc(2030));
       expect(session.lastSql, contains('@vt:timestamptz'));
     });
 
@@ -426,7 +427,7 @@ void main() {
       expect(m.headers, {'x-pgmq-group': 'g1'});
       expect(m.enqueuedAt, isA<DateTime>());
       expect(m.lastReadAt, isA<DateTime>());
-      expect(m.vt, isA<DateTime>());
+      expect(m.visibleAt, isA<DateTime>());
     });
 
     test('read tolerates legacy rows without headers/last_read_at', () async {
@@ -487,7 +488,7 @@ void main() {
         readCt: 0,
         enqueuedAt: DateTime.utc(2024, 1, 1),
         lastReadAt: null,
-        vt: DateTime.utc(2024, 1, 1),
+        visibleAt: DateTime.utc(2024, 1, 1),
         message: const {'to': 'c@example.com'},
         headers: null,
       );

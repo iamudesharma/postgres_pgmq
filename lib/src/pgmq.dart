@@ -6,8 +6,9 @@ import 'exception.dart';
 import 'models.dart';
 import 'queue.dart';
 
-/// Default visibility timeout applied when the caller passes `vt: 0` or
-/// omits it, mirroring `pgmq-go` (`vtDefault = 30`).
+/// Default visibility timeout applied when the caller omits
+/// `visibilityTimeout` or passes a non-positive value, mirroring `pgmq-go`
+/// (`vtDefault = 30`).
 const int defaultVisibilityTimeoutSec = 30;
 
 /// Default long-poll upper bound in seconds (`pgmq.read_with_poll` default).
@@ -497,15 +498,16 @@ class Pgmq {
   // Read
   // -------------------------------------------------------------------------
 
-  /// Reads up to [qty] visible messages, making them invisible for [vt].
+  /// Reads up to [qty] visible messages, making them invisible for [visibilityTimeout].
   ///
-  /// [vt] is a [Duration] leash (seconds granularity); values `<= 0` fall
+  /// [visibilityTimeout] is a [Duration] leash (seconds granularity); values `<= 0` fall
   /// back to [defaultVisibilityTimeoutSec]. [conditional] is an experimental
   /// server-side `message @> conditional` JSONB filter. [fromJson] decodes
   /// custom payload types from the raw decoded `jsonb` value.
   Future<List<PgmqMessage<T>>> read<T>(
     String queue, {
-    Duration vt = const Duration(seconds: defaultVisibilityTimeoutSec),
+    Duration visibilityTimeout =
+        const Duration(seconds: defaultVisibilityTimeoutSec),
     int qty = 1,
     Map<String, dynamic>? conditional,
     T Function(Object? json)? fromJson,
@@ -518,7 +520,7 @@ class Pgmq {
       ),
       parameters: {
         'queue': queue,
-        'vt': _vtSeconds(vt),
+        'vt': _visibilityTimeoutSeconds(visibilityTimeout),
         'qty': qty,
         'conditional': conditional ?? <String, dynamic>{},
       },
@@ -530,14 +532,15 @@ class Pgmq {
   /// Reads a single message, or `null` when no message is visible.
   Future<PgmqMessage<T>?> readOne<T>(
     String queue, {
-    Duration vt = const Duration(seconds: defaultVisibilityTimeoutSec),
+    Duration visibilityTimeout =
+        const Duration(seconds: defaultVisibilityTimeoutSec),
     Map<String, dynamic>? conditional,
     T Function(Object? json)? fromJson,
     Duration? timeout,
   }) async {
     final rows = await read<T>(
       queue,
-      vt: vt,
+      visibilityTimeout: visibilityTimeout,
       qty: 1,
       conditional: conditional,
       fromJson: fromJson,
@@ -552,7 +555,8 @@ class Pgmq {
   /// The wait happens server-side. [timeout] should exceed [maxPollSeconds].
   Future<List<PgmqMessage<T>>> readWithPoll<T>(
     String queue, {
-    Duration vt = const Duration(seconds: defaultVisibilityTimeoutSec),
+    Duration visibilityTimeout =
+        const Duration(seconds: defaultVisibilityTimeoutSec),
     int qty = 1,
     int maxPollSeconds = defaultMaxPollSeconds,
     int pollIntervalMs = defaultPollIntervalMs,
@@ -567,7 +571,7 @@ class Pgmq {
       ),
       parameters: {
         'queue': queue,
-        'vt': _vtSeconds(vt),
+        'vt': _visibilityTimeoutSeconds(visibilityTimeout),
         'qty': qty,
         'max_poll_seconds': maxPollSeconds,
         'poll_interval_ms': pollIntervalMs,
@@ -589,9 +593,9 @@ class Pgmq {
   /// [maxPollSeconds], or by [timeout] when that finishes sooner). This makes
   /// it safe to tie to widget or application lifecycle.
   ///
-  /// Each emitted message stays invisible for [vt]; delete or archive it via
+  /// Each emitted message stays invisible for [visibilityTimeout]; delete or archive it via
   /// the returned [PgmqMessage.msgId] to acknowledge. A message that is not
-  /// acknowledged becomes visible again after [vt].
+  /// acknowledged becomes visible again after [visibilityTimeout].
   ///
   /// ```dart
   /// final subscription = pgmq
@@ -609,7 +613,8 @@ class Pgmq {
   /// polling fallback. Call [watch] again for each additional consumer.
   Stream<PgmqMessage<T>> watch<T>(
     String queue, {
-    Duration vt = const Duration(seconds: defaultVisibilityTimeoutSec),
+    Duration visibilityTimeout =
+        const Duration(seconds: defaultVisibilityTimeoutSec),
     int qty = 1,
     int maxPollSeconds = defaultMaxPollSeconds,
     int pollIntervalMs = defaultPollIntervalMs,
@@ -644,7 +649,7 @@ class Pgmq {
           if (cancelled) break;
           final messages = await readWithPoll<T>(
             queue,
-            vt: vt,
+            visibilityTimeout: visibilityTimeout,
             qty: qty,
             maxPollSeconds: maxPollSeconds,
             pollIntervalMs: pollIntervalMs,
@@ -688,7 +693,8 @@ class Pgmq {
   /// create a GIN index via [createFifoIndex].
   Future<List<PgmqMessage<T>>> readGrouped<T>(
     String queue, {
-    Duration vt = const Duration(seconds: defaultVisibilityTimeoutSec),
+    Duration visibilityTimeout =
+        const Duration(seconds: defaultVisibilityTimeoutSec),
     int qty = 1,
     T Function(Object? json)? fromJson,
     Duration? timeout,
@@ -696,7 +702,7 @@ class Pgmq {
     return _readGroupedFn<T>(
       'pgmq.read_grouped(@queue:text, @vt:int, @qty:int)',
       queue,
-      vt: vt,
+      visibilityTimeout: visibilityTimeout,
       qty: qty,
       fromJson: fromJson,
       timeout: timeout,
@@ -706,7 +712,8 @@ class Pgmq {
   /// Long-polling variant of [readGrouped].
   Future<List<PgmqMessage<T>>> readGroupedWithPoll<T>(
     String queue, {
-    Duration vt = const Duration(seconds: defaultVisibilityTimeoutSec),
+    Duration visibilityTimeout =
+        const Duration(seconds: defaultVisibilityTimeoutSec),
     int qty = 1,
     int maxPollSeconds = defaultMaxPollSeconds,
     int pollIntervalMs = defaultPollIntervalMs,
@@ -716,7 +723,7 @@ class Pgmq {
     return _readGroupedPollFn<T>(
       'pgmq.read_grouped_with_poll(@queue:text, @vt:int, @qty:int, @max_poll_seconds:int, @poll_interval_ms:int)',
       queue,
-      vt: vt,
+      visibilityTimeout: visibilityTimeout,
       qty: qty,
       maxPollSeconds: maxPollSeconds,
       pollIntervalMs: pollIntervalMs,
@@ -729,7 +736,8 @@ class Pgmq {
   /// rank-2, and so on (fair, anti-starvation).
   Future<List<PgmqMessage<T>>> readGroupedRr<T>(
     String queue, {
-    Duration vt = const Duration(seconds: defaultVisibilityTimeoutSec),
+    Duration visibilityTimeout =
+        const Duration(seconds: defaultVisibilityTimeoutSec),
     int qty = 1,
     T Function(Object? json)? fromJson,
     Duration? timeout,
@@ -737,7 +745,7 @@ class Pgmq {
     return _readGroupedFn<T>(
       'pgmq.read_grouped_rr(@queue:text, @vt:int, @qty:int)',
       queue,
-      vt: vt,
+      visibilityTimeout: visibilityTimeout,
       qty: qty,
       fromJson: fromJson,
       timeout: timeout,
@@ -747,7 +755,8 @@ class Pgmq {
   /// Long-polling variant of [readGroupedRr].
   Future<List<PgmqMessage<T>>> readGroupedRrWithPoll<T>(
     String queue, {
-    Duration vt = const Duration(seconds: defaultVisibilityTimeoutSec),
+    Duration visibilityTimeout =
+        const Duration(seconds: defaultVisibilityTimeoutSec),
     int qty = 1,
     int maxPollSeconds = defaultMaxPollSeconds,
     int pollIntervalMs = defaultPollIntervalMs,
@@ -757,7 +766,7 @@ class Pgmq {
     return _readGroupedPollFn<T>(
       'pgmq.read_grouped_rr_with_poll(@queue:text, @vt:int, @qty:int, @max_poll_seconds:int, @poll_interval_ms:int)',
       queue,
-      vt: vt,
+      visibilityTimeout: visibilityTimeout,
       qty: qty,
       maxPollSeconds: maxPollSeconds,
       pollIntervalMs: pollIntervalMs,
@@ -770,7 +779,8 @@ class Pgmq {
   /// group — for horizontal per-group parallelism.
   Future<List<PgmqMessage<T>>> readGroupedHead<T>(
     String queue, {
-    Duration vt = const Duration(seconds: defaultVisibilityTimeoutSec),
+    Duration visibilityTimeout =
+        const Duration(seconds: defaultVisibilityTimeoutSec),
     int qty = 1,
     T Function(Object? json)? fromJson,
     Duration? timeout,
@@ -778,7 +788,7 @@ class Pgmq {
     return _readGroupedFn<T>(
       'pgmq.read_grouped_head(@queue:text, @vt:int, @qty:int)',
       queue,
-      vt: vt,
+      visibilityTimeout: visibilityTimeout,
       qty: qty,
       fromJson: fromJson,
       timeout: timeout,
@@ -788,7 +798,8 @@ class Pgmq {
   /// Long-polling variant of [readGroupedHead].
   Future<List<PgmqMessage<T>>> readGroupedHeadWithPoll<T>(
     String queue, {
-    Duration vt = const Duration(seconds: defaultVisibilityTimeoutSec),
+    Duration visibilityTimeout =
+        const Duration(seconds: defaultVisibilityTimeoutSec),
     int qty = 1,
     int maxPollSeconds = defaultMaxPollSeconds,
     int pollIntervalMs = defaultPollIntervalMs,
@@ -798,7 +809,7 @@ class Pgmq {
     return _readGroupedPollFn<T>(
       'pgmq.read_grouped_head_with_poll(@queue:text, @vt:int, @qty:int, @max_poll_seconds:int, @poll_interval_ms:int)',
       queue,
-      vt: vt,
+      visibilityTimeout: visibilityTimeout,
       qty: qty,
       maxPollSeconds: maxPollSeconds,
       pollIntervalMs: pollIntervalMs,
@@ -917,7 +928,7 @@ class Pgmq {
   /// Pass [delay] for a relative lease or [visibleAt] for an absolute one
   /// (mutually exclusive; defaults to 30s). Returns the updated message, or
   /// `null` when the id does not exist.
-  Future<PgmqMessage<T>?> setVt<T>(
+  Future<PgmqMessage<T>?> setVisibilityTimeout<T>(
     String queue,
     int msgId, {
     Duration? delay,
@@ -925,7 +936,7 @@ class Pgmq {
     T Function(Object? json)? fromJson,
     Duration? timeout,
   }) async {
-    final rows = await _setVt<T>(
+    final rows = await _setVisibilityTimeout<T>(
       queue,
       TypedValue(Type.bigInteger, msgId),
       isArray: false,
@@ -937,8 +948,8 @@ class Pgmq {
     return rows.firstOrNull;
   }
 
-  /// Batch variant of [setVt]. Returns the updated messages.
-  Future<List<PgmqMessage<T>>> setVtBatch<T>(
+  /// Batch variant of [setVisibilityTimeout]. Returns the updated messages.
+  Future<List<PgmqMessage<T>>> setVisibilityTimeoutBatch<T>(
     String queue,
     List<int> msgIds, {
     Duration? delay,
@@ -947,7 +958,7 @@ class Pgmq {
     Duration? timeout,
   }) async {
     if (msgIds.isEmpty) return <PgmqMessage<T>>[];
-    return _setVt<T>(
+    return _setVisibilityTimeout<T>(
       queue,
       TypedValue(Type.bigIntegerArray, msgIds),
       isArray: true,
@@ -1332,7 +1343,7 @@ class Pgmq {
   Future<List<PgmqMessage<T>>> _readGroupedFn<T>(
     String fn,
     String queue, {
-    required Duration vt,
+    required Duration visibilityTimeout,
     required int qty,
     required T Function(Object? json)? fromJson,
     required Duration? timeout,
@@ -1340,7 +1351,11 @@ class Pgmq {
     _requireQueueName(queue);
     final result = await session.execute(
       Sql.named('SELECT * FROM $fn'),
-      parameters: {'queue': queue, 'vt': _vtSeconds(vt), 'qty': qty},
+      parameters: {
+        'queue': queue,
+        'vt': _visibilityTimeoutSeconds(visibilityTimeout),
+        'qty': qty
+      },
       timeout: timeout,
     );
     return _decodeMessages<T>(result, fromJson);
@@ -1349,7 +1364,7 @@ class Pgmq {
   Future<List<PgmqMessage<T>>> _readGroupedPollFn<T>(
     String fn,
     String queue, {
-    required Duration vt,
+    required Duration visibilityTimeout,
     required int qty,
     required int maxPollSeconds,
     required int pollIntervalMs,
@@ -1361,7 +1376,7 @@ class Pgmq {
       Sql.named('SELECT * FROM $fn'),
       parameters: {
         'queue': queue,
-        'vt': _vtSeconds(vt),
+        'vt': _visibilityTimeoutSeconds(visibilityTimeout),
         'qty': qty,
         'max_poll_seconds': maxPollSeconds,
         'poll_interval_ms': pollIntervalMs,
@@ -1413,7 +1428,7 @@ class Pgmq {
     );
   }
 
-  Future<List<PgmqMessage<T>>> _setVt<T>(
+  Future<List<PgmqMessage<T>>> _setVisibilityTimeout<T>(
     String queue,
     TypedValue<Object> msgIds, {
     required bool isArray,
@@ -1503,9 +1518,9 @@ void _requireSingleDelay(Duration? delay, DateTime? visibleAt) {
 int _delaySeconds(Duration? delay) => delay == null ? 0 : delay.inSeconds;
 
 /// Visibility timeout in whole seconds; `<= 0` falls back to the default.
-int _vtSeconds(Duration vt) {
-  if (vt.inSeconds <= 0) return defaultVisibilityTimeoutSec;
-  return vt.inSeconds;
+int _visibilityTimeoutSeconds(Duration visibilityTimeout) {
+  if (visibilityTimeout.inSeconds <= 0) return defaultVisibilityTimeoutSec;
+  return visibilityTimeout.inSeconds;
 }
 
 int _firstInt(Result result) {

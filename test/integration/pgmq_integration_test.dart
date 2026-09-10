@@ -255,14 +255,14 @@ void main() {
           }
         });
 
-        test('setVt extends visibility', () async {
+        test('setVisibilityTimeout extends visibility', () async {
           final q = _queue('vt');
           await pgmq.createQueue(q);
           try {
             await pgmq.send(q, {'a': 1});
             final first = (await pgmq.read(q)).single;
             // consumed lease; extend it so a second immediate read stays empty.
-            await pgmq.setVt(q, first.msgId,
+            await pgmq.setVisibilityTimeout(q, first.msgId,
                 delay: const Duration(seconds: 30));
             expect(await pgmq.read(q), isEmpty);
             await pgmq.delete(q, first.msgId);
@@ -432,7 +432,7 @@ void main() {
                 .watch(
                   qty: 1,
                   maxPollSeconds: 1,
-                  vt: const Duration(seconds: 30),
+                  visibilityTimeout: const Duration(seconds: 30),
                 )
                 .take(2)
                 .toList()

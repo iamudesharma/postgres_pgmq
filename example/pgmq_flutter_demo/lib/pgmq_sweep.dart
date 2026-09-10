@@ -292,31 +292,31 @@ Future<List<SweepStep>> runFullSweep(
       return 'deleted=3 archived=2';
     });
 
-    await step('setVt', () async {
+    await step('setVisibilityTimeout', () async {
       final queue = track('vt');
       await pgmq.createQueue(queue);
       await pgmq.send(queue, {'a': 1});
       final first = (await pgmq.read(queue)).single;
-      final updated = await pgmq.setVt(
+      final updated = await pgmq.setVisibilityTimeout(
         queue,
         first.msgId,
         delay: const Duration(seconds: 60),
       );
       if (updated == null || updated.msgId != first.msgId) {
-        throw StateError('setVt returned $updated');
+        throw StateError('setVisibilityTimeout returned $updated');
       }
       if ((await pgmq.read(queue)).isNotEmpty) {
         throw StateError('lease not extended');
       }
       await pgmq.send(queue, {'a': 2});
       final more = await pgmq.read(queue, qty: 10);
-      final extended = await pgmq.setVtBatch(
+      final extended = await pgmq.setVisibilityTimeoutBatch(
         queue,
         more.map((m) => m.msgId).toList(),
         delay: const Duration(seconds: 60),
       );
       if (extended.length != more.length) {
-        throw StateError('setVtBatch: $extended');
+        throw StateError('setVisibilityTimeoutBatch: $extended');
       }
       await pgmq.delete(queue, first.msgId);
       return 'extended=${extended.length + 1}';

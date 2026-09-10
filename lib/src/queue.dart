@@ -173,16 +173,18 @@ class PgmqQueue<T> {
   // Read
   // -------------------------------------------------------------------------
 
-  /// Reads up to [qty] visible messages, making them invisible for [vt].
+  /// Reads up to [qty] visible messages, making them invisible for
+  /// [visibilityTimeout].
   Future<List<PgmqMessage<T>>> read({
-    Duration vt = const Duration(seconds: defaultVisibilityTimeoutSec),
+    Duration visibilityTimeout =
+        const Duration(seconds: defaultVisibilityTimeoutSec),
     int qty = 1,
     Map<String, dynamic>? conditional,
     Duration? timeout,
   }) {
     return client.read<T>(
       name,
-      vt: vt,
+      visibilityTimeout: visibilityTimeout,
       qty: qty,
       conditional: conditional,
       fromJson: fromJson,
@@ -192,13 +194,14 @@ class PgmqQueue<T> {
 
   /// Reads a single message, or `null` when no message is visible.
   Future<PgmqMessage<T>?> readOne({
-    Duration vt = const Duration(seconds: defaultVisibilityTimeoutSec),
+    Duration visibilityTimeout =
+        const Duration(seconds: defaultVisibilityTimeoutSec),
     Map<String, dynamic>? conditional,
     Duration? timeout,
   }) {
     return client.readOne<T>(
       name,
-      vt: vt,
+      visibilityTimeout: visibilityTimeout,
       conditional: conditional,
       fromJson: fromJson,
       timeout: timeout,
@@ -208,7 +211,8 @@ class PgmqQueue<T> {
   /// Long-polls for up to [qty] messages until one appears or
   /// [maxPollSeconds] elapses.
   Future<List<PgmqMessage<T>>> readWithPoll({
-    Duration vt = const Duration(seconds: defaultVisibilityTimeoutSec),
+    Duration visibilityTimeout =
+        const Duration(seconds: defaultVisibilityTimeoutSec),
     int qty = 1,
     int maxPollSeconds = defaultMaxPollSeconds,
     int pollIntervalMs = defaultPollIntervalMs,
@@ -217,7 +221,7 @@ class PgmqQueue<T> {
   }) {
     return client.readWithPoll<T>(
       name,
-      vt: vt,
+      visibilityTimeout: visibilityTimeout,
       qty: qty,
       maxPollSeconds: maxPollSeconds,
       pollIntervalMs: pollIntervalMs,
@@ -232,7 +236,8 @@ class PgmqQueue<T> {
   /// See [Pgmq.watch] for the lifecycle and cancellation semantics. The
   /// stream is single-subscription; call [watch] again for another consumer.
   Stream<PgmqMessage<T>> watch({
-    Duration vt = const Duration(seconds: defaultVisibilityTimeoutSec),
+    Duration visibilityTimeout =
+        const Duration(seconds: defaultVisibilityTimeoutSec),
     int qty = 1,
     int maxPollSeconds = defaultMaxPollSeconds,
     int pollIntervalMs = defaultPollIntervalMs,
@@ -241,7 +246,7 @@ class PgmqQueue<T> {
   }) {
     return client.watch<T>(
       name,
-      vt: vt,
+      visibilityTimeout: visibilityTimeout,
       qty: qty,
       maxPollSeconds: maxPollSeconds,
       pollIntervalMs: pollIntervalMs,
@@ -255,13 +260,14 @@ class PgmqQueue<T> {
   ///
   /// Groups are keyed by `headers->>'x-pgmq-group'`.
   Future<List<PgmqMessage<T>>> readGrouped({
-    Duration vt = const Duration(seconds: defaultVisibilityTimeoutSec),
+    Duration visibilityTimeout =
+        const Duration(seconds: defaultVisibilityTimeoutSec),
     int qty = 1,
     Duration? timeout,
   }) {
     return client.readGrouped<T>(
       name,
-      vt: vt,
+      visibilityTimeout: visibilityTimeout,
       qty: qty,
       fromJson: fromJson,
       timeout: timeout,
@@ -270,7 +276,8 @@ class PgmqQueue<T> {
 
   /// Long-polling variant of [readGrouped].
   Future<List<PgmqMessage<T>>> readGroupedWithPoll({
-    Duration vt = const Duration(seconds: defaultVisibilityTimeoutSec),
+    Duration visibilityTimeout =
+        const Duration(seconds: defaultVisibilityTimeoutSec),
     int qty = 1,
     int maxPollSeconds = defaultMaxPollSeconds,
     int pollIntervalMs = defaultPollIntervalMs,
@@ -278,7 +285,7 @@ class PgmqQueue<T> {
   }) {
     return client.readGroupedWithPoll<T>(
       name,
-      vt: vt,
+      visibilityTimeout: visibilityTimeout,
       qty: qty,
       maxPollSeconds: maxPollSeconds,
       pollIntervalMs: pollIntervalMs,
@@ -290,13 +297,14 @@ class PgmqQueue<T> {
   /// FIFO round-robin read: interleaves rank-1 of every eligible group, then
   /// rank-2, and so on (fair, anti-starvation).
   Future<List<PgmqMessage<T>>> readGroupedRr({
-    Duration vt = const Duration(seconds: defaultVisibilityTimeoutSec),
+    Duration visibilityTimeout =
+        const Duration(seconds: defaultVisibilityTimeoutSec),
     int qty = 1,
     Duration? timeout,
   }) {
     return client.readGroupedRr<T>(
       name,
-      vt: vt,
+      visibilityTimeout: visibilityTimeout,
       qty: qty,
       fromJson: fromJson,
       timeout: timeout,
@@ -305,7 +313,8 @@ class PgmqQueue<T> {
 
   /// Long-polling variant of [readGroupedRr].
   Future<List<PgmqMessage<T>>> readGroupedRrWithPoll({
-    Duration vt = const Duration(seconds: defaultVisibilityTimeoutSec),
+    Duration visibilityTimeout =
+        const Duration(seconds: defaultVisibilityTimeoutSec),
     int qty = 1,
     int maxPollSeconds = defaultMaxPollSeconds,
     int pollIntervalMs = defaultPollIntervalMs,
@@ -313,7 +322,7 @@ class PgmqQueue<T> {
   }) {
     return client.readGroupedRrWithPoll<T>(
       name,
-      vt: vt,
+      visibilityTimeout: visibilityTimeout,
       qty: qty,
       maxPollSeconds: maxPollSeconds,
       pollIntervalMs: pollIntervalMs,
@@ -324,13 +333,14 @@ class PgmqQueue<T> {
 
   /// Reads the head message of up to [qty] groups — one per group.
   Future<List<PgmqMessage<T>>> readGroupedHead({
-    Duration vt = const Duration(seconds: defaultVisibilityTimeoutSec),
+    Duration visibilityTimeout =
+        const Duration(seconds: defaultVisibilityTimeoutSec),
     int qty = 1,
     Duration? timeout,
   }) {
     return client.readGroupedHead<T>(
       name,
-      vt: vt,
+      visibilityTimeout: visibilityTimeout,
       qty: qty,
       fromJson: fromJson,
       timeout: timeout,
@@ -339,7 +349,8 @@ class PgmqQueue<T> {
 
   /// Long-polling variant of [readGroupedHead].
   Future<List<PgmqMessage<T>>> readGroupedHeadWithPoll({
-    Duration vt = const Duration(seconds: defaultVisibilityTimeoutSec),
+    Duration visibilityTimeout =
+        const Duration(seconds: defaultVisibilityTimeoutSec),
     int qty = 1,
     int maxPollSeconds = defaultMaxPollSeconds,
     int pollIntervalMs = defaultPollIntervalMs,
@@ -347,7 +358,7 @@ class PgmqQueue<T> {
   }) {
     return client.readGroupedHeadWithPoll<T>(
       name,
-      vt: vt,
+      visibilityTimeout: visibilityTimeout,
       qty: qty,
       maxPollSeconds: maxPollSeconds,
       pollIntervalMs: pollIntervalMs,
@@ -409,13 +420,13 @@ class PgmqQueue<T> {
   /// Pass [delay] for a relative lease or [visibleAt] for an absolute one
   /// (mutually exclusive; defaults to 30s). Returns the updated message, or
   /// `null` when the id does not exist.
-  Future<PgmqMessage<T>?> setVt(
+  Future<PgmqMessage<T>?> setVisibilityTimeout(
     int msgId, {
     Duration? delay,
     DateTime? visibleAt,
     Duration? timeout,
   }) {
-    return client.setVt<T>(
+    return client.setVisibilityTimeout<T>(
       name,
       msgId,
       delay: delay,
@@ -425,14 +436,14 @@ class PgmqQueue<T> {
     );
   }
 
-  /// Batch variant of [setVt]. Returns the updated messages.
-  Future<List<PgmqMessage<T>>> setVtBatch(
+  /// Batch variant of [setVisibilityTimeout]. Returns the updated messages.
+  Future<List<PgmqMessage<T>>> setVisibilityTimeoutBatch(
     List<int> msgIds, {
     Duration? delay,
     DateTime? visibleAt,
     Duration? timeout,
   }) {
-    return client.setVtBatch<T>(
+    return client.setVisibilityTimeoutBatch<T>(
       name,
       msgIds,
       delay: delay,

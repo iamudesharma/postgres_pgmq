@@ -136,7 +136,7 @@ final ids = await pgmq.sendBatch('jobs', [
 ### Read / pop
 
 ```dart
-// read up to qty, invisible to others for vt
+// read up to qty, invisible to others for visibilityTimeout
 final batch = await pgmq.read<Map<String, dynamic>>('jobs', qty: 10);
 final one = await pgmq.readOne('jobs');
 
@@ -169,8 +169,8 @@ final subscription = jobs.watch(qty: 10).listen((message) async {
 await subscription.cancel();
 ```
 
-Messages stay invisible for `vt` while in flight; delete or archive them to
-acknowledge. For push-style wake-ups instead of polling, see
+Messages stay invisible for `visibilityTimeout` while in flight; delete or
+archive them to acknowledge. For push-style wake-ups instead of polling, see
 [Insert notifications](#insert-notifications).
 
 ### FIFO groups
@@ -194,8 +194,9 @@ await pgmq.archive('jobs', msgId);           // bool
 await pgmq.archiveBatch('jobs', [1, 2]);     // List<int> archived
 
 // heartbeat pattern: extend the lease while processing
-await pgmq.setVt('jobs', msgId, delay: Duration(minutes: 2));
-await pgmq.setVtBatch('jobs', ids, delay: Duration(minutes: 2));
+await pgmq.setVisibilityTimeout('jobs', msgId, delay: Duration(minutes: 2));
+await pgmq.setVisibilityTimeoutBatch('jobs', ids,
+    delay: Duration(minutes: 2));
 ```
 
 ### Typed payloads

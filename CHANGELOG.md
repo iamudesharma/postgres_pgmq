@@ -1,5 +1,13 @@
 # Unreleased
 
+**Breaking changes**
+
+- Renamed `setVt`/`setVtBatch` to `setVisibilityTimeout`/
+  `setVisibilityTimeoutBatch`.
+- Renamed the `vt` named parameter to `visibilityTimeout` on all read
+  methods and on `watch`.
+- Renamed `PgmqMessage.vt` to `PgmqMessage.visibleAt`.
+
 - Added `Pgmq.queue` and `Pgmq.queueOf`: queue-scoped `PgmqQueue<T>` handles
   that bind the queue name and, for typed handles, payload encoding and
   decoding once.
