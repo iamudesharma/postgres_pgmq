@@ -12,7 +12,7 @@ strongly typed models. No extra connection, pooling, or configuration layer.
 ```yaml
 dependencies:
   postgres: ^3.5.0
-  postgres_pgmq: ^0.0.2
+  postgres_pgmq: ^0.1.0
 ```
 
 ```dart
