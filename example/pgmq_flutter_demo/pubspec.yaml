@@ -3,7 +3,7 @@ description: >-
   Flutter demo and verification app for the postgres_pgmq package.
   Connects to a PGMQ database and exercises the full client API.
 publish_to: 'none'
-version: 0.1.0
+version: 0.0.1
 
 environment:
   sdk: ^3.4.0

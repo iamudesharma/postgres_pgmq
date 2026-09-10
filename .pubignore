@@ -1,0 +1,22 @@
+# When .pubignore exists at the package root, pub ignores .gitignore here.
+# Mirror .gitignore exclusions, then add publish-specific omissions.
+
+.dart_tool/
+.build/
+doc/api/
+coverage/
+*.log
+.pub-cache/
+.pub/
+build/
+.idea/
+.vscode/
+*.iml
+.DS_Store
+.test_cache/
+pubspec.lock
+
+# Flutter demo native trees — keep in git/CI, omit from pub.dev tarball.
+example/pgmq_flutter_demo/android/
+example/pgmq_flutter_demo/ios/
+example/pgmq_flutter_demo/macos/

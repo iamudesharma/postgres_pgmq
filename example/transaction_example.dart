@@ -25,6 +25,11 @@ Future<void> main() async {
       // Same PGMQ API, now transactional.
       final txPgmq = Pgmq(tx);
 
+      // Serialize queue-level DDL with other clients. The advisory lock is
+      // transaction-scoped: it is released on commit or rollback.
+      await txPgmq.acquireQueueLock('orders');
+      await txPgmq.createFifoIndex('orders');
+
       final orderId = await txPgmq.send('orders', {'total': 42});
       await txPgmq.send('order_events', {'order_msg_id': orderId});
 

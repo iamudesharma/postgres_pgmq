@@ -177,6 +177,13 @@ class QueueMetrics {
   /// When the metrics were scraped.
   final DateTime scrapeTime;
 
+  /// Messages sitting in the partitioned queue's default partition.
+  ///
+  /// Only reported by PGMQ v1.13.0+; `null` on older servers or when the
+  /// queue is not partitioned. A non-zero value means `pg_partman`
+  /// maintenance is failing for the queue.
+  final int? defaultPartitionLength;
+
   /// Creates metrics.
   const QueueMetrics({
     required this.queueName,
@@ -186,9 +193,11 @@ class QueueMetrics {
     required this.oldestMsgAgeSec,
     required this.totalMessages,
     required this.scrapeTime,
+    this.defaultPartitionLength,
   });
 
-  /// Builds from a row map; tolerates 6-column (legacy) rows.
+  /// Builds from a row map; tolerates 6-column (legacy) and 7-column
+  /// (pre-v1.13) rows.
   factory QueueMetrics.fromColumnMap(Map<String, dynamic> row) {
     return QueueMetrics(
       queueName: row['queue_name'] as String,
@@ -198,6 +207,7 @@ class QueueMetrics {
       oldestMsgAgeSec: _asIntOrNull(row['oldest_msg_age_sec']),
       totalMessages: _asInt(row['total_messages'], 'total_messages'),
       scrapeTime: _asDateTime(row['scrape_time'], 'scrape_time'),
+      defaultPartitionLength: _asIntOrNull(row['default_partition_length']),
     );
   }
 

@@ -32,10 +32,10 @@ await connection.runTx((tx) async {
 });
 ```
 
-Targets PGMQ `v1.12.0` (Postgres 14–18). The official PGMQ SQL API is the
-source of truth; [`pgmq-go`](https://github.com/craigpastro/pgmq-go) informed
-the thin-wrapper architecture and the official Python client informed feature
-coverage.
+Targets PGMQ `v1.13.0` (Postgres 14–18; compatible with v1.12.0). The official
+PGMQ SQL API is the source of truth; [`pgmq-go`](https://github.com/craigpastro/pgmq-go)
+informed the thin-wrapper architecture and the official Python and Rust
+clients informed feature coverage.
 
 ## Start a local PGMQ database
 
@@ -55,16 +55,31 @@ docker run -d --name pgmq -e POSTGRES_PASSWORD=postgres -p 5432:5432 \
 
 ```dart
 await pgmq.ensureExtension(); // CREATE EXTENSION IF NOT EXISTS pgmq
+await pgmq.extensionVersion(); // '1.13.0' (null when not installed)
 await pgmq.createQueue('jobs');
 await pgmq.createQueue('fast', unlogged: true);
-await pgmq.createPartitionedQueue('big', partitionInterval: '10000');
+await pgmq.createPartitionedQueue('big', partitionInterval: '10000'); // idempotent
 
-await pgmq.listQueues();      // List<QueueRecord>
-await pgmq.metrics('jobs');   // QueueMetrics
+await pgmq.listQueues();          // List<QueueRecord>
+await pgmq.queueMetadata('jobs'); // QueueRecord? (single pgmq.meta lookup)
+await pgmq.queueExists('jobs');   // bool
+await pgmq.metrics('jobs');       // QueueMetrics
 await pgmq.metricsAll();
-await pgmq.purgeQueue('jobs'); // int purged
-await pgmq.dropQueue('jobs');  // bool existed
+await pgmq.purgeQueue('jobs');    // int purged
+await pgmq.dropQueue('jobs');     // bool existed
+
+// Serialize queue-level DDL with a transaction-scoped advisory lock:
+await connection.runTx((tx) async {
+  final txPgmq = Pgmq(tx);
+  await txPgmq.acquireQueueLock('jobs');
+  await txPgmq.createFifoIndex('jobs');
+});
 ```
+
+`createPartitionedQueue` takes the queue lock and checks `pgmq.meta` inside
+`runTx`, so it is race-free and idempotent (`ifNotExists: false` opts out).
+`acquireQueueLock` uses `pg_advisory_xact_lock`, so it must run inside a
+transaction and is released on commit/rollback.
 
 ### Send
 
@@ -157,11 +172,21 @@ Patterns: `*` matches exactly one dot-segment, `#` matches zero or more.
 
 ```dart
 await pgmq.enableNotify('jobs', throttleIntervalMs: 250);
-// in a long-lived connection:
-connection.channels[Pgmq.notifyChannelName('jobs')].listen((_) => ...);
+
+// In a long-lived connection (LISTEN needs a Connection, not a Pool):
+final sub = pgmq.listenNotifyInsert('jobs').listen((_) {
+  // A message was inserted; read it with the usual API.
+});
+// ... later:
+await sub.cancel(); // UNLISTENs
+
 await pgmq.updateNotify('jobs', 100);
 await pgmq.disableNotify('jobs');
 ```
+
+The raw channel remains available as `Pgmq.notifyChannelName('jobs')`
+(`pgmq.q_jobs.INSERT`) for `connection.channels[...]` subscriptions.
+Notifications are transient — keep a poll (`readWithPoll`) as a fallback.
 
 ## Design notes
 
@@ -217,5 +242,5 @@ PGMQ_TEST_DSN='postgresql://postgres:postgres@localhost:5434/postgres' \
 
 ## License
 
-MIT — see [LICENSE](LICENSE). PGMQ itself is Apache-2.0; reference SDKs were
+MIT — see [LICENSE](https://github.com/iamudesharma/postgres_pgmq/blob/main/LICENSE). PGMQ itself is Apache-2.0; reference SDKs were
 used for behavior and API research only, not copied.

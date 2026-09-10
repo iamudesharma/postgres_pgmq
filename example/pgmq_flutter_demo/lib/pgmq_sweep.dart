@@ -92,7 +92,11 @@ Future<List<SweepStep>> runFullSweep(
       await pgmq.ensureExtension();
       final exists = await pgmq.extensionExists();
       if (!exists) throw StateError('extension missing after ensure');
-      return 'installed';
+      final version = await pgmq.extensionVersion();
+      if (version == null || version.isEmpty) {
+        throw StateError('extensionVersion missing');
+      }
+      return 'installed v$version';
     });
 
     await step('create/list queues', () async {
@@ -109,6 +113,16 @@ Future<List<SweepStep>> runFullSweep(
       final unlogged =
           (await pgmq.listQueues()).firstWhere((e) => e.queueName == b);
       if (!unlogged.isUnlogged) throw StateError('unlogged flag not set');
+      final meta = await pgmq.queueMetadata(a);
+      if (meta == null || meta.queueName != a) {
+        throw StateError('queueMetadata: $meta');
+      }
+      if (meta.isUnlogged) {
+        throw StateError('standard queue reported as unlogged');
+      }
+      if (!await pgmq.queueExists(b)) {
+        throw StateError('queueExists returned false');
+      }
       return 'queues=$a,$b';
     });
 
@@ -428,6 +442,9 @@ Future<List<SweepStep>> runFullSweep(
         try {
           await connection.runTx((tx) async {
             final txPgmq = Pgmq(tx);
+            // Transaction-scoped advisory lock: serializes queue-level DDL.
+            await txPgmq.acquireQueueLock(queue);
+            await txPgmq.createFifoIndex(queue);
             await txPgmq.send(queue, {'n': 1});
             if ((await txPgmq.read(queue)).length != 1) {
               throw StateError('not visible inside tx');
@@ -441,6 +458,19 @@ Future<List<SweepStep>> runFullSweep(
           throw StateError('rollback did not happen');
         }
         return 'rolled back';
+      });
+
+      await step('notify listener', () async {
+        final queue = track('listen');
+        await pgmq.createQueue(queue);
+        await pgmq.enableNotify(queue, throttleIntervalMs: 0);
+        // Starts the lazy LISTEN when subscribed.
+        final firstEvent = pgmq.listenNotifyInsert(queue).first;
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+        await pgmq.send(queue, {'n': 1});
+        await firstEvent.timeout(const Duration(seconds: 10));
+        await pgmq.disableNotify(queue);
+        return 'notified';
       });
     }
 

@@ -71,6 +71,12 @@ void main() {
         await connection?.close();
       });
 
+      test('extensionVersion reports the installed version', () async {
+        final version = await pgmq.extensionVersion();
+        expect(version, isNotNull);
+        expect(version, matches(RegExp(r'^\d+\.\d+(\.\d+)?')));
+      });
+
       group('queue lifecycle', () {
         test('create / list / purge / drop', () async {
           final q = _queue('life');
@@ -95,6 +101,62 @@ void main() {
               (await pgmq.listQueues()).firstWhere((e) => e.queueName == q);
           expect(record.isUnlogged, isTrue);
           expect(await pgmq.dropQueue(q), isTrue);
+        });
+
+        test('queueMetadata / queueExists', () async {
+          final q = _queue('meta');
+          expect(await pgmq.queueExists(q), isFalse);
+          expect(await pgmq.queueMetadata(q), isNull);
+          await pgmq.createQueue(q);
+          try {
+            final meta = await pgmq.queueMetadata(q);
+            expect(meta, isNotNull);
+            expect(meta!.queueName, q);
+            expect(meta.isPartitioned, isFalse);
+            expect(meta.isUnlogged, isFalse);
+            expect(await pgmq.queueExists(q), isTrue);
+          } finally {
+            await pgmq.dropQueue(q);
+          }
+        });
+      });
+
+      group('partitioned queues', () {
+        test('ifNotExists create is lock-protected and idempotent', () async {
+          try {
+            await connection!.execute(
+              Sql.named('CREATE EXTENSION IF NOT EXISTS pg_partman'),
+              ignoreRows: true,
+            );
+          } on PgException {
+            markTestSkipped('pg_partman is not available in this database.');
+            return;
+          }
+          final q = _queue('part');
+          final qTx = _queue('part_tx');
+          try {
+            await pgmq.createPartitionedQueue(q);
+            final meta = await pgmq.queueMetadata(q);
+            expect(meta?.isPartitioned, isTrue);
+
+            // Second call is a no-op (no exception).
+            await pgmq.createPartitionedQueue(q);
+
+            // The TxSession branch joins the caller's transaction.
+            await connection!.runTx((tx) async {
+              await Pgmq(tx).createPartitionedQueue(qTx);
+            });
+            expect((await pgmq.queueMetadata(qTx))?.isPartitioned, isTrue);
+
+            final m = await pgmq.metrics(q);
+            expect(m.queueName, q);
+            // v1.13+ reports the default partition length; older servers
+            // leave the column out entirely.
+            expect(m.defaultPartitionLength, anyOf(isNull, isA<int>()));
+          } finally {
+            await pgmq.dropQueue(q);
+            await pgmq.dropQueue(qTx);
+          }
         });
       });
 
@@ -221,6 +283,8 @@ void main() {
             expect(m.queueName, q);
             expect(m.queueLength, 2);
             expect(m.totalMessages, greaterThanOrEqualTo(2));
+            // Standard queues have no default partition on any server version.
+            expect(m.defaultPartitionLength, isNull);
             expect(
               (await pgmq.metricsAll()).map((e) => e.queueName),
               contains(q),
@@ -328,6 +392,23 @@ void main() {
           expect(await pgmq.read(q), isEmpty);
           await pgmq.dropQueue(q);
         });
+
+        test('acquireQueueLock guards queue DDL in a transaction', () async {
+          final q = _queue('lock');
+          await pgmq.createQueue(q);
+          try {
+            await connection!.runTx((tx) async {
+              final txPgmq = Pgmq(tx);
+              await txPgmq.acquireQueueLock(q);
+              await txPgmq.createFifoIndex(q);
+            });
+            // The lock was released with the transaction; the index exists
+            // and re-creating it is a no-op.
+            await pgmq.createFifoIndex(q);
+          } finally {
+            await pgmq.dropQueue(q);
+          }
+        });
       });
 
       group('notifications', () {
@@ -339,6 +420,23 @@ void main() {
             final throttles = await pgmq.listNotifyThrottles();
             expect(throttles.map((t) => t.queueName), contains(q));
             await pgmq.updateNotify(q, 100);
+            await pgmq.disableNotify(q);
+          } finally {
+            await pgmq.dropQueue(q);
+          }
+        });
+
+        test('listenNotifyInsert emits on insert', () async {
+          final q = _queue('listen');
+          await pgmq.createQueue(q);
+          try {
+            await pgmq.enableNotify(q, throttleIntervalMs: 0);
+            // Starts the lazy LISTEN when subscribed.
+            final firstEvent = pgmq.listenNotifyInsert(q).first;
+            // Give the LISTEN a moment to reach the server.
+            await Future<void>.delayed(const Duration(milliseconds: 250));
+            await pgmq.send(q, {'n': 1});
+            await firstEvent.timeout(const Duration(seconds: 10));
             await pgmq.disableNotify(q);
           } finally {
             await pgmq.dropQueue(q);
