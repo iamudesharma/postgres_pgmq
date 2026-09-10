@@ -8,12 +8,15 @@
 /// import 'package:postgres_pgmq/postgres_pgmq.dart';
 ///
 /// final pgmq = Pgmq(connection);
-/// await pgmq.createQueue('emails');
-/// final id = await pgmq.send('emails', {'to': 'a@example.com'});
-/// final msg = await pgmq.pop('emails');
+///
+/// final emails = pgmq.queue('emails'); // queue-scoped handle
+/// await emails.create();
+/// final id = await emails.send({'to': 'a@example.com'});
+/// final msg = await emails.pop();
 /// ```
 library;
 
 export 'src/exception.dart';
 export 'src/models.dart';
 export 'src/pgmq.dart';
+export 'src/queue.dart';

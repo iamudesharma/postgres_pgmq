@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:postgres/postgres.dart';
 import 'package:postgres_pgmq/postgres_pgmq.dart';
 import 'package:test/test.dart';
@@ -189,7 +191,7 @@ void main() {
       expect(await pgmq.sendBatch('q', <Map<String, dynamic>>[]), isEmpty);
       expect(await pgmq.deleteBatch('q', []), isEmpty);
       expect(await pgmq.archiveBatch('q', []), isEmpty);
-      expect(await pgmq.setVtBatch('q', []), isEmpty);
+      expect(await pgmq.setVisibilityTimeoutBatch('q', []), isEmpty);
       expect(
         await pgmq.sendBatchTopic('key', <Map<String, dynamic>>[]),
         isEmpty,
@@ -271,18 +273,19 @@ void main() {
       expect(session.lastParams['headers'], isA<TypedValue>());
     });
 
-    test('setVt uses int vs timestamptz overloads', () async {
+    test('setVisibilityTimeout uses int vs timestamptz overloads', () async {
       final session = FakeSession();
       session.handlers.add((sql) {
         expect(sql, contains('pgmq.set_vt('));
         return emptyResult();
       });
       final pgmq = Pgmq(session);
-      await pgmq.setVt('q', 1, delay: const Duration(seconds: 60));
+      await pgmq.setVisibilityTimeout('q', 1,
+          delay: const Duration(seconds: 60));
       expect(session.lastSql, contains('@vt:int'));
       expect(session.lastParams['vt'], 60);
 
-      await pgmq.setVt('q', 1, visibleAt: DateTime.utc(2030));
+      await pgmq.setVisibilityTimeout('q', 1, visibleAt: DateTime.utc(2030));
       expect(session.lastSql, contains('@vt:timestamptz'));
     });
 
@@ -424,7 +427,7 @@ void main() {
       expect(m.headers, {'x-pgmq-group': 'g1'});
       expect(m.enqueuedAt, isA<DateTime>());
       expect(m.lastReadAt, isA<DateTime>());
-      expect(m.vt, isA<DateTime>());
+      expect(m.visibleAt, isA<DateTime>());
     });
 
     test('read tolerates legacy rows without headers/last_read_at', () async {
@@ -485,7 +488,7 @@ void main() {
         readCt: 0,
         enqueuedAt: DateTime.utc(2024, 1, 1),
         lastReadAt: null,
-        vt: DateTime.utc(2024, 1, 1),
+        visibleAt: DateTime.utc(2024, 1, 1),
         message: const {'to': 'c@example.com'},
         headers: null,
       );
@@ -675,6 +678,145 @@ void main() {
       session.handlers.add((_) => throw PgException('connection reset'));
       final pgmq = Pgmq(session);
       expect(() => pgmq.read('q'), throwsA(isA<PgException>()));
+    });
+  });
+
+  group('PgmqQueue handle', () {
+    test('queue() validates the name and binds it on every call', () async {
+      final session = FakeSession();
+      session.handlers.add((sql) {
+        if (sql.contains('pgmq.send(')) return singleValue(42);
+        if (sql.contains('pgmq.read(')) {
+          return tableResult(MessageRow.columns, [msg(id: 7).values]);
+        }
+        return emptyResult();
+      });
+      final pgmq = Pgmq(session);
+      final jobs = pgmq.queue('jobs');
+
+      expect(jobs.name, 'jobs');
+      expect(() => pgmq.queue(''), throwsA(isA<PgmqException>()));
+      expect(() => pgmq.queueOf<int>('', fromJson: (json) => 0),
+          throwsA(isA<PgmqException>()));
+
+      expect(await jobs.send({'n': 1}), 42);
+      expect(session.lastParams['queue'], 'jobs');
+      expect(session.lastParams['msg'], {'n': 1});
+
+      final messages = await jobs.read(qty: 1);
+      expect(messages.single.msgId, 7);
+      expect(session.lastParams['queue'], 'jobs');
+    });
+
+    test('typed handle binds toJson and fromJson once', () async {
+      final session = FakeSession();
+      session.handlers.add((sql) {
+        if (sql.contains('pgmq.send(')) return singleValue(9);
+        if (sql.contains('pgmq.read(')) {
+          return tableResult(
+            MessageRow.columns,
+            [
+              msg(id: 3, payload: {'value': 7}).values
+            ],
+          );
+        }
+        return emptyResult();
+      });
+      final pgmq = Pgmq(session);
+      final counters = pgmq.queueOf<int>(
+        'counters',
+        fromJson: (json) => ((json! as Map)['value'] as num).toInt(),
+        toJson: (value) => {'value': value},
+      );
+
+      expect(await counters.send(5), 9);
+      expect(session.lastParams['msg'], {'value': 5});
+      expect((await counters.readOne())!.message, 7);
+    });
+
+    test('watch emits messages from successive long polls', () async {
+      final session = FakeSession();
+      var reads = 0;
+      session.handlers.add((sql) {
+        if (sql.contains('read_with_poll')) {
+          reads++;
+          if (reads > 2) return emptyResult();
+          return tableResult(
+            MessageRow.columns,
+            [
+              msg(id: reads, payload: {'n': reads}).values
+            ],
+          );
+        }
+        return emptyResult();
+      });
+      final pgmq = Pgmq(session);
+      final messages = await pgmq
+          .watch<Map<String, dynamic>>('jobs', qty: 1, maxPollSeconds: 1)
+          .take(2)
+          .toList();
+
+      expect(messages.map((m) => m.msgId), [1, 2]);
+      expect(messages.map((m) => m.message['n']), [1, 2]);
+      expect(reads, greaterThanOrEqualTo(2));
+    });
+
+    test('watch issues no further reads after cancellation', () async {
+      final session = FakeSession();
+      var reads = 0;
+      final firstRead = Completer<void>();
+      session.handlers.add((sql) {
+        if (sql.contains('read_with_poll')) {
+          reads++;
+          if (!firstRead.isCompleted) firstRead.complete();
+          return emptyResult();
+        }
+        return emptyResult();
+      });
+      final pgmq = Pgmq(session);
+      final subscription = pgmq.watch('jobs', maxPollSeconds: 1).listen((_) {});
+
+      await firstRead.future;
+      await subscription.cancel().timeout(const Duration(seconds: 5));
+      final readsAtCancel = reads;
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(reads, readsAtCancel);
+      expect(readsAtCancel, greaterThan(0));
+    });
+
+    test('handle delegates queue-scoped operations with bound names', () async {
+      final session = FakeSession();
+      session.handlers.add((sql) {
+        if (sql.contains('pgmq.send(')) return singleValue(1);
+        if (sql.contains('purge_queue')) return singleValue(3);
+        if (sql.contains('drop_queue') ||
+            sql.contains('pgmq.delete') ||
+            sql.contains('unbind_topic')) {
+          return singleValue(true);
+        }
+        return emptyResult();
+      });
+      final pgmq = Pgmq(session);
+      final jobs = pgmq.queue('jobs');
+
+      expect(await jobs.purge(), 3);
+      expect(session.lastParams['queue'], 'jobs');
+
+      expect(await jobs.drop(), isTrue);
+      expect(session.lastParams['queue'], 'jobs');
+
+      expect(await jobs.delete(5), isTrue);
+      expect(session.lastSql, contains('pgmq.delete('));
+      expect(session.lastParams['queue'], 'jobs');
+
+      await jobs.bindTopic('orders.#');
+      expect(session.lastSql, contains('bind_topic'));
+      expect(session.lastParams['pattern'], 'orders.#');
+      expect(session.lastParams['queue'], 'jobs');
+
+      expect(await jobs.unbindTopic('orders.#'), isTrue);
+      expect(session.lastParams['queue'], 'jobs');
     });
   });
 }

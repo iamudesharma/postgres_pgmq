@@ -21,10 +21,11 @@ import 'package:postgres_pgmq/postgres_pgmq.dart';
 
 final pgmq = Pgmq(connection); // or Pgmq(pool)
 await pgmq.ensureExtension();
-await pgmq.createQueue('emails');
 
-final id = await pgmq.send('emails', {'to': 'ada@example.com'});
-final msg = await pgmq.pop('emails'); // read + delete
+final emails = pgmq.queue('emails'); // queue-scoped handle
+await emails.create();
+await emails.send({'to': 'ada@example.com'});
+final msg = await emails.pop(); // read + delete
 
 await connection.runTx((tx) async {
   final txPgmq = Pgmq(tx); // joins your transaction
@@ -81,6 +82,38 @@ await connection.runTx((tx) async {
 `acquireQueueLock` uses `pg_advisory_xact_lock`, so it must run inside a
 transaction and is released on commit/rollback.
 
+### Queue handles
+
+A handle binds a queue name (and, for typed handles, the payload conversion)
+so it is not repeated on every call:
+
+```dart
+final jobs = pgmq.queue('jobs');
+await jobs.create();
+final id = await jobs.send({'job': 'email'});
+final message = await jobs.readOne();
+await jobs.delete(message!.msgId);
+await jobs.drop();
+
+// Client-wide operations stay on the client:
+final all = await pgmq.metricsAll();
+```
+
+Bind a domain model once with `queueOf`:
+
+```dart
+final orders = pgmq.queueOf<Order>(
+  'orders',
+  fromJson: (json) => Order.fromJson((json! as Map).cast()),
+  toJson: (order) => order.toJson(),
+);
+await orders.send(Order(id: 1));
+final message = await orders.readOne(); // PgmqMessage<Order>
+```
+
+Handles are cheap, immutable views — create them where they are needed (for
+example, in a repository constructor).
+
 ### Send
 
 ```dart
@@ -103,7 +136,7 @@ final ids = await pgmq.sendBatch('jobs', [
 ### Read / pop
 
 ```dart
-// read up to qty, invisible to others for vt
+// read up to qty, invisible to others for visibilityTimeout
 final batch = await pgmq.read<Map<String, dynamic>>('jobs', qty: 10);
 final one = await pgmq.readOne('jobs');
 
@@ -118,6 +151,27 @@ final many = await pgmq.popMany('jobs', 10);
 // experimental server-side JSON filter
 final filtered = await pgmq.read('jobs', conditional: {'job': 'email'});
 ```
+
+### Streaming messages
+
+`watch` long-polls a queue and emits each message as it becomes visible. It
+starts on the first listener, honors `pause()`/`resume()` (no reads while
+paused), and stops for good when the subscription is cancelled:
+
+```dart
+final subscription = jobs.watch(qty: 10).listen((message) async {
+  await process(message.message);
+  await jobs.delete(message.msgId); // acknowledge
+});
+
+// Later — no further reads are issued; an in-flight long poll is awaited
+// (bounded by `maxPollSeconds`), then the stream closes.
+await subscription.cancel();
+```
+
+Messages stay invisible for `visibilityTimeout` while in flight; delete or
+archive them to acknowledge. For push-style wake-ups instead of polling, see
+[Insert notifications](#insert-notifications).
 
 ### FIFO groups
 
@@ -140,8 +194,9 @@ await pgmq.archive('jobs', msgId);           // bool
 await pgmq.archiveBatch('jobs', [1, 2]);     // List<int> archived
 
 // heartbeat pattern: extend the lease while processing
-await pgmq.setVt('jobs', msgId, delay: Duration(minutes: 2));
-await pgmq.setVtBatch('jobs', ids, delay: Duration(minutes: 2));
+await pgmq.setVisibilityTimeout('jobs', msgId, delay: Duration(minutes: 2));
+await pgmq.setVisibilityTimeoutBatch('jobs', ids,
+    delay: Duration(minutes: 2));
 ```
 
 ### Typed payloads
@@ -188,6 +243,37 @@ The raw channel remains available as `Pgmq.notifyChannelName('jobs')`
 (`pgmq.q_jobs.INSERT`) for `connection.channels[...]` subscriptions.
 Notifications are transient — keep a poll (`readWithPoll`) as a fallback.
 
+### Flutter
+
+The package is plain Dart, so it runs in Flutter apps, isolates and
+server-side Dart with the same API. Put the client in the data layer and let
+a repository expose a typed stream to view models, following Flutter's
+[app architecture guide](https://docs.flutter.dev/app-architecture/guide):
+
+```dart
+class JobRepository {
+  JobRepository(Pgmq pgmq)
+      : _jobs = pgmq.queueOf<Job>(
+          'jobs',
+          fromJson: (json) => Job.fromJson((json! as Map).cast()),
+          toJson: (job) => job.toJson(),
+        );
+
+  final PgmqQueue<Job> _jobs;
+
+  Future<int> enqueue(Job job) => _jobs.send(job);
+
+  Stream<Job> watchJobs() => _jobs.watch().map((message) => message.message);
+}
+```
+
+Cancel the subscription when the widget or page is disposed
+(`StreamBuilder` does this for you), and pause it when the app goes to the
+background if you do not want to poll there. Never call the API from
+`build`.
+
+An end-to-end Flutter demo lives in `example/pgmq_flutter_demo/`.
+
 ## Design notes
 
 - **Your session, your rules.** `Pgmq` accepts a `Session` and never closes
@@ -230,6 +316,8 @@ PGMQ_TEST_DSN='postgresql://postgres:postgres@localhost:5434/postgres' \
 - `example/pool_example.dart` — pool + batch + long-poll worker
 - `example/transaction_example.dart` — `runTx` with `Pgmq(tx)`
 - `example/topics_fifo_example.dart` — FIFO groups and topic routing
+- `example/queue_handle_example.dart` — queue handles, typed payloads and
+  streamed consumption
 - `example/pgmq_flutter_demo/` — Flutter app (mobile/desktop) with a UI and
   a full-API automated sweep (`flutter test`), proving the package from a
   real consumer's dependency graph

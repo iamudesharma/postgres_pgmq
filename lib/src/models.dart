@@ -20,8 +20,9 @@ class PgmqMessage<T> {
   /// Absent on older PGMQ servers; `null` in that case.
   final DateTime? lastReadAt;
 
-  /// Timestamp at which the message becomes visible again.
-  final DateTime vt;
+  /// Timestamp at which the message becomes visible again (the `vt` column
+  /// of the PGMQ message record).
+  final DateTime visibleAt;
 
   /// Decoded message payload (`jsonb`).
   final T message;
@@ -37,7 +38,7 @@ class PgmqMessage<T> {
     required this.readCt,
     required this.enqueuedAt,
     required this.lastReadAt,
-    required this.vt,
+    required this.visibleAt,
     required this.message,
     required this.headers,
   });
@@ -49,7 +50,7 @@ class PgmqMessage<T> {
       readCt: readCt,
       enqueuedAt: enqueuedAt,
       lastReadAt: lastReadAt,
-      vt: vt,
+      visibleAt: visibleAt,
       message: convert(message),
       headers: headers,
     );
@@ -77,7 +78,7 @@ class PgmqMessage<T> {
       readCt: _asInt(row['read_ct'], 'read_ct'),
       enqueuedAt: _asDateTime(row['enqueued_at'], 'enqueued_at'),
       lastReadAt: _asDateTimeOrNull(row['last_read_at']),
-      vt: _asDateTime(row['vt'], 'vt'),
+      visibleAt: _asDateTime(row['vt'], 'vt'),
       message: payload,
       headers: _asStringMapOrNull(row['headers']),
     );
@@ -94,13 +95,13 @@ class PgmqMessage<T> {
         other.readCt == readCt &&
         other.enqueuedAt == enqueuedAt &&
         other.lastReadAt == lastReadAt &&
-        other.vt == vt &&
+        other.visibleAt == visibleAt &&
         other.message == message;
   }
 
   @override
   int get hashCode =>
-      Object.hash(msgId, readCt, enqueuedAt, lastReadAt, vt, message);
+      Object.hash(msgId, readCt, enqueuedAt, lastReadAt, visibleAt, message);
 }
 
 /// Metadata for a queue from `pgmq.list_queues()`.

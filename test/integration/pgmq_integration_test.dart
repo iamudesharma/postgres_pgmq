@@ -255,14 +255,14 @@ void main() {
           }
         });
 
-        test('setVt extends visibility', () async {
+        test('setVisibilityTimeout extends visibility', () async {
           final q = _queue('vt');
           await pgmq.createQueue(q);
           try {
             await pgmq.send(q, {'a': 1});
             final first = (await pgmq.read(q)).single;
             // consumed lease; extend it so a second immediate read stays empty.
-            await pgmq.setVt(q, first.msgId,
+            await pgmq.setVisibilityTimeout(q, first.msgId,
                 delay: const Duration(seconds: 30));
             expect(await pgmq.read(q), isEmpty);
             await pgmq.delete(q, first.msgId);
@@ -405,6 +405,61 @@ void main() {
             // The lock was released with the transaction; the index exists
             // and re-creating it is a no-op.
             await pgmq.createFifoIndex(q);
+          } finally {
+            await pgmq.dropQueue(q);
+          }
+        });
+      });
+
+      group('queue handles', () {
+        test('handle round-trips and streams messages', () async {
+          final q = _queue('handle');
+          await pgmq.createQueue(q);
+          final jobs = pgmq.queue(q);
+          try {
+            expect(await jobs.exists(), isTrue);
+
+            final id = await jobs.send({'n': 1});
+            expect(id, greaterThan(0));
+            final first = await jobs.readOne();
+            expect(first, isNotNull);
+            expect(first!.message['n'], 1);
+            await jobs.delete(first.msgId);
+
+            await jobs.send({'n': 2});
+            await jobs.send({'n': 3});
+            final received = await jobs
+                .watch(
+                  qty: 1,
+                  maxPollSeconds: 1,
+                  visibilityTimeout: const Duration(seconds: 30),
+                )
+                .take(2)
+                .toList()
+                .timeout(const Duration(seconds: 20));
+            expect(received.map((m) => m.message['n']), [2, 3]);
+            for (final message in received) {
+              await jobs.delete(message.msgId);
+            }
+          } finally {
+            await pgmq.dropQueue(q);
+          }
+        });
+
+        test('typed handle encodes and decodes payloads', () async {
+          final q = _queue('typed');
+          await pgmq.createQueue(q);
+          final counters = pgmq.queueOf<int>(
+            q,
+            fromJson: (json) => ((json! as Map)['value'] as num).toInt(),
+            toJson: (value) => {'value': value},
+          );
+          try {
+            await counters.send(7);
+            final message = await counters.readOne();
+            expect(message, isNotNull);
+            expect(message!.message, 7);
+            await counters.delete(message.msgId);
           } finally {
             await pgmq.dropQueue(q);
           }
