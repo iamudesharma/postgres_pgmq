@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:postgres/postgres.dart';
 
 import 'exception.dart';
 import 'models.dart';
+import 'queue.dart';
 
 /// Default visibility timeout applied when the caller passes `vt: 0` or
 /// omits it, mirroring `pgmq-go` (`vtDefault = 30`).
@@ -44,6 +47,53 @@ class Pgmq {
 
   /// Creates a client wrapping [session].
   const Pgmq(this.session);
+
+  // -------------------------------------------------------------------------
+  // Queue handles
+  // -------------------------------------------------------------------------
+
+  /// Returns a queue-scoped handle with `Map<String, dynamic>` payloads.
+  ///
+  /// A handle binds the queue name so it is not repeated on every call, and
+  /// keeps the client easy to pass around:
+  ///
+  /// ```dart
+  /// final jobs = pgmq.queue('jobs');
+  /// await jobs.send({'job': 'send-email'});
+  /// final message = await jobs.readOne();
+  /// ```
+  ///
+  /// For domain models, use [queueOf] to bind payload conversion once.
+  /// Handles are cheap, immutable views — create them wherever they are
+  /// needed.
+  PgmqQueue<Map<String, dynamic>> queue(String name) {
+    _requireQueueName(name);
+    return PgmqQueue<Map<String, dynamic>>(this, name);
+  }
+
+  /// Returns a queue-scoped handle that encodes and decodes [T].
+  ///
+  /// ```dart
+  /// final users = pgmq.queueOf<User>(
+  ///   'users',
+  ///   fromJson: (json) => User.fromJson((json! as Map).cast()),
+  ///   toJson: (user) => user.toJson(),
+  /// );
+  /// await users.send(User(id: 1));
+  /// final message = await users.readOne(); // PgmqMessage<User>
+  /// ```
+  ///
+  /// [fromJson] decodes raw `jsonb` payloads read from the queue; [toJson]
+  /// encodes values before they are sent. When [toJson] is omitted, values
+  /// must already be driver-encodable (`Map`, `List`, primitives).
+  PgmqQueue<T> queueOf<T>(
+    String name, {
+    required T Function(Object? json) fromJson,
+    Object? Function(T value)? toJson,
+  }) {
+    _requireQueueName(name);
+    return PgmqQueue<T>(this, name, fromJson: fromJson, toJson: toJson);
+  }
 
   // -------------------------------------------------------------------------
   // Extension lifecycle
@@ -526,6 +576,110 @@ class Pgmq {
       timeout: timeout,
     );
     return _decodeMessages<T>(result, fromJson);
+  }
+
+  /// Returns a stream that emits messages from [queue] as they become
+  /// visible, using server-side long polling ([readWithPoll]).
+  ///
+  /// The stream is single-subscription and does no work until the first
+  /// listener subscribes. It honors [StreamSubscription.pause] — no new read
+  /// is started while paused — and stops after
+  /// [StreamSubscription.cancel]: no further reads are issued, and `cancel()`
+  /// completes once the in-flight long poll returns (bounded by
+  /// [maxPollSeconds], or by [timeout] when that finishes sooner). This makes
+  /// it safe to tie to widget or application lifecycle.
+  ///
+  /// Each emitted message stays invisible for [vt]; delete or archive it via
+  /// the returned [PgmqMessage.msgId] to acknowledge. A message that is not
+  /// acknowledged becomes visible again after [vt].
+  ///
+  /// ```dart
+  /// final subscription = pgmq
+  ///     .watch<Map<String, dynamic>>('jobs')
+  ///     .listen((message) async {
+  ///   await process(message.message);
+  ///   await pgmq.delete('jobs', message.msgId);
+  /// });
+  /// // Later:
+  /// await subscription.cancel();
+  /// ```
+  ///
+  /// This is a polling stream. For push-based wake-ups, enable the insert
+  /// trigger with [enableNotify] and combine [listenNotifyInsert] with a
+  /// polling fallback. Call [watch] again for each additional consumer.
+  Stream<PgmqMessage<T>> watch<T>(
+    String queue, {
+    Duration vt = const Duration(seconds: defaultVisibilityTimeoutSec),
+    int qty = 1,
+    int maxPollSeconds = defaultMaxPollSeconds,
+    int pollIntervalMs = defaultPollIntervalMs,
+    Map<String, dynamic>? conditional,
+    T Function(Object? json)? fromJson,
+    Duration? timeout,
+  }) {
+    _requireQueueName(queue);
+    late final StreamController<PgmqMessage<T>> controller;
+    var paused = false;
+    var cancelled = false;
+    Completer<void>? resume;
+    final done = Completer<void>();
+
+    Future<void> waitWhilePaused() async {
+      while (paused && !cancelled) {
+        resume ??= Completer<void>();
+        await resume!.future;
+      }
+    }
+
+    void releasePaused() {
+      final waiter = resume;
+      resume = null;
+      if (waiter != null && !waiter.isCompleted) waiter.complete();
+    }
+
+    Future<void> poll() async {
+      try {
+        while (!cancelled) {
+          await waitWhilePaused();
+          if (cancelled) break;
+          final messages = await readWithPoll<T>(
+            queue,
+            vt: vt,
+            qty: qty,
+            maxPollSeconds: maxPollSeconds,
+            pollIntervalMs: pollIntervalMs,
+            conditional: conditional,
+            fromJson: fromJson,
+            timeout: timeout,
+          );
+          if (cancelled) break;
+          for (final message in messages) {
+            if (cancelled) break;
+            controller.add(message);
+          }
+        }
+      } catch (error, stackTrace) {
+        if (!cancelled) controller.addError(error, stackTrace);
+      } finally {
+        if (!cancelled) await controller.close();
+        if (!done.isCompleted) done.complete();
+      }
+    }
+
+    controller = StreamController<PgmqMessage<T>>(
+      onListen: () => unawaited(poll()),
+      onPause: () => paused = true,
+      onResume: () {
+        paused = false;
+        releasePaused();
+      },
+      onCancel: () {
+        cancelled = true;
+        releasePaused();
+        return done.future;
+      },
+    );
+    return controller.stream;
   }
 
   /// FIFO read: fills the batch from the earliest eligible group first.
