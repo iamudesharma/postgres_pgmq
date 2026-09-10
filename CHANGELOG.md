@@ -1,4 +1,4 @@
-# 0.1.0
+# 0.0.2
 
 - Added `acquireQueueLock`: transaction-scoped advisory queue lock
   (`pgmq.acquire_queue_lock`), matching the official Rust client and
