@@ -70,6 +70,18 @@ class Pgmq {
     return (result.firstOrNull?.firstOrNull as bool?) ?? false;
   }
 
+  /// Returns the installed PGMQ extension version (e.g. `1.13.0`), or `null`
+  /// when the extension is not installed.
+  Future<String?> extensionVersion({Duration? timeout}) async {
+    final result = await session.execute(
+      Sql.named(
+        "SELECT extversion FROM pg_extension WHERE extname = 'pgmq'",
+      ),
+      timeout: timeout,
+    );
+    return result.firstOrNull?.firstOrNull as String?;
+  }
+
   // -------------------------------------------------------------------------
   // Queue management
   // -------------------------------------------------------------------------
@@ -120,25 +132,65 @@ class Pgmq {
   ///
   /// [partitionInterval] is a row count (`'10000'`) or duration (`'1 day'`);
   /// [retentionInterval] uses the same format.
+  ///
+  /// When [ifNotExists] is `true` (default) the call is idempotent and
+  /// race-free: [acquireQueueLock] is taken and `pgmq.meta` is checked before
+  /// `pgmq.create_partitioned` runs, mirroring the official Rust client.
+  /// Because the advisory lock is transaction-scoped, the check-and-create
+  /// runs inside `runTx` for a [Connection] or [Pool]; when the session is a
+  /// [TxSession] it joins the caller's transaction. Sessions that support
+  /// neither fall back to a best-effort metadata check. Pass
+  /// `ifNotExists: false` to call `pgmq.create_partitioned` directly.
   Future<void> createPartitionedQueue(
     String queue, {
     String partitionInterval = '10000',
     String retentionInterval = '100000',
+    bool ifNotExists = true,
     Duration? timeout,
   }) async {
     _requireQueueName(queue);
-    await session.execute(
-      Sql.named(
-        'SELECT pgmq.create_partitioned(@queue:text, @partition_interval:text, @retention_interval:text)',
-      ),
-      parameters: {
-        'queue': queue,
-        'partition_interval': partitionInterval,
-        'retention_interval': retentionInterval,
-      },
-      ignoreRows: true,
-      timeout: timeout,
-    );
+    if (!ifNotExists) {
+      await _createPartitionedQueue(
+        queue,
+        partitionInterval,
+        retentionInterval,
+        timeout,
+      );
+      return;
+    }
+    final current = session;
+    if (current is TxSession) {
+      await _createPartitionedQueueLocked(
+        current,
+        queue,
+        partitionInterval: partitionInterval,
+        retentionInterval: retentionInterval,
+        timeout: timeout,
+      );
+      return;
+    }
+    if (current is SessionExecutor) {
+      final executor = current as SessionExecutor;
+      await executor.runTx(
+        (tx) => _createPartitionedQueueLocked(
+          tx,
+          queue,
+          partitionInterval: partitionInterval,
+          retentionInterval: retentionInterval,
+          timeout: timeout,
+        ),
+      );
+      return;
+    }
+    // No transaction support: check first, create if absent (best effort).
+    if (await queueMetadata(queue, timeout: timeout) == null) {
+      await _createPartitionedQueue(
+        queue,
+        partitionInterval,
+        retentionInterval,
+        timeout,
+      );
+    }
   }
 
   /// Migrates an existing archive table to a partitioned table.
@@ -197,6 +249,59 @@ class Pgmq {
     return result
         .map((r) => QueueRecord.fromColumnMap(r.toColumnMap()))
         .toList();
+  }
+
+  /// Returns metadata for a single queue, or `null` when it does not exist.
+  ///
+  /// Reads `pgmq.meta` directly (the same source as `pgmq.list_queues()`),
+  /// so it is a cheap point lookup rather than a full listing.
+  Future<QueueRecord?> queueMetadata(String queue, {Duration? timeout}) async {
+    _requireQueueName(queue);
+    final result = await session.execute(
+      Sql.named(
+        'SELECT queue_name, is_partitioned, is_unlogged, created_at '
+        'FROM pgmq.meta WHERE queue_name = @queue:text',
+      ),
+      parameters: {'queue': queue},
+      timeout: timeout,
+    );
+    final row = result.firstOrNull;
+    if (row == null) return null;
+    return QueueRecord.fromColumnMap(row.toColumnMap());
+  }
+
+  /// Returns `true` when [queue] exists.
+  Future<bool> queueExists(String queue, {Duration? timeout}) async {
+    return await queueMetadata(queue, timeout: timeout) != null;
+  }
+
+  /// Acquires a transaction-level advisory lock for [queue].
+  ///
+  /// The lock is held until the current transaction commits or rolls back
+  /// (it is `pg_advisory_xact_lock(hashtext('pgmq.queue_<queue>'))` under the
+  /// hood), so call it from within a transaction:
+  ///
+  /// ```dart
+  /// await connection.runTx((tx) async {
+  ///   final txPgmq = Pgmq(tx);
+  ///   await txPgmq.acquireQueueLock('jobs');
+  ///   await txPgmq.createFifoIndex('jobs'); // serialized with other clients
+  /// });
+  /// ```
+  ///
+  /// Use it to serialize queue/table-level operations that are not
+  /// concurrency-safe by themselves (FIFO index creation, partitioned queue
+  /// creation, ...). Outside an explicit transaction the lock is released as
+  /// soon as the statement's implicit transaction ends. Blocks until the lock
+  /// is available; pass a query [timeout] to bound the wait.
+  Future<void> acquireQueueLock(String queue, {Duration? timeout}) async {
+    _requireQueueName(queue);
+    await session.execute(
+      Sql.named('SELECT pgmq.acquire_queue_lock(@queue:text)'),
+      parameters: {'queue': queue},
+      ignoreRows: true,
+      timeout: timeout,
+    );
   }
 
   /// Validates a queue name server-side (raises on invalid names).
@@ -1036,6 +1141,36 @@ class Pgmq {
   /// Returns the `LISTEN` channel for a queue: `pgmq.q_<queue>.INSERT`.
   static String notifyChannelName(String queue) => 'pgmq.q_$queue.INSERT';
 
+  /// Subscribes to insert notifications for [queue] (see [enableNotify]).
+  ///
+  /// Requires the underlying session to be a [Connection]: `LISTEN` is
+  /// connection state and cannot be shared through a [Pool]. The returned
+  /// stream is broadcast and emits the raw (empty) `NOTIFY` payload for each
+  /// insert the server chooses to notify about, subject to the configured
+  /// throttle. Cancel the subscription to `UNLISTEN`:
+  ///
+  /// ```dart
+  /// await pgmq.enableNotify('jobs', throttleIntervalMs: 250);
+  /// final sub = pgmq.listenNotifyInsert('jobs').listen((_) => print('new job'));
+  /// // ...
+  /// await sub.cancel();
+  /// ```
+  ///
+  /// Notifications are transient — treat them as a wake-up signal and keep a
+  /// polling fallback ([readWithPoll]). See [notifyChannelName] for the
+  /// underlying channel.
+  Stream<String> listenNotifyInsert(String queue) {
+    _requireQueueName(queue);
+    final current = session;
+    if (current is! Connection) {
+      throw const PgmqException(
+        'listenNotifyInsert requires a Connection session; LISTEN state '
+        'cannot be shared through a Pool or TxSession.',
+      );
+    }
+    return current.channels[notifyChannelName(queue)];
+  }
+
   // -------------------------------------------------------------------------
   // Internals
   // -------------------------------------------------------------------------
@@ -1080,6 +1215,48 @@ class Pgmq {
       timeout: timeout,
     );
     return _decodeMessages<T>(result, fromJson);
+  }
+
+  Future<void> _createPartitionedQueue(
+    String queue,
+    String partitionInterval,
+    String retentionInterval,
+    Duration? timeout,
+  ) async {
+    await session.execute(
+      Sql.named(
+        'SELECT pgmq.create_partitioned(@queue:text, @partition_interval:text, @retention_interval:text)',
+      ),
+      parameters: {
+        'queue': queue,
+        'partition_interval': partitionInterval,
+        'retention_interval': retentionInterval,
+      },
+      ignoreRows: true,
+      timeout: timeout,
+    );
+  }
+
+  /// Acquires the queue lock and creates [queue] only when it does not exist.
+  ///
+  /// Must be called with a transactional session: the lock only makes sense
+  /// when it lives until commit/rollback.
+  Future<void> _createPartitionedQueueLocked(
+    Session txSession,
+    String queue, {
+    required String partitionInterval,
+    required String retentionInterval,
+    required Duration? timeout,
+  }) async {
+    final tx = Pgmq(txSession);
+    await tx.acquireQueueLock(queue, timeout: timeout);
+    if (await tx.queueMetadata(queue, timeout: timeout) != null) return;
+    await tx._createPartitionedQueue(
+      queue,
+      partitionInterval,
+      retentionInterval,
+      timeout,
+    );
   }
 
   Future<List<PgmqMessage<T>>> _setVt<T>(

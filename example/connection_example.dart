@@ -25,9 +25,14 @@ Future<void> main() async {
     // Wrap the existing connection — no new pooling or config needed.
     final pgmq = Pgmq(connection);
     await pgmq.ensureExtension();
+    print('pgmq version: ${await pgmq.extensionVersion()}');
 
     const queue = 'emails';
     await pgmq.createQueue(queue);
+
+    // Cheap point lookup of queue metadata (`pgmq.meta`).
+    final meta = await pgmq.queueMetadata(queue);
+    print('queue exists: ${meta != null}, partitioned: ${meta?.isPartitioned}');
 
     final msgId = await pgmq.send(queue, {
       'to': 'ada@example.com',

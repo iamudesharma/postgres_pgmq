@@ -106,6 +106,21 @@ void main() {
       expect(() => pgmq.send('', {'a': 1}), throwsA(isA<PgmqException>()));
       expect(() => pgmq.read(''), throwsA(isA<PgmqException>()));
       expect(() => pgmq.dropQueue(''), throwsA(isA<PgmqException>()));
+      expect(() => pgmq.acquireQueueLock(''), throwsA(isA<PgmqException>()));
+      expect(() => pgmq.queueMetadata(''), throwsA(isA<PgmqException>()));
+      expect(() => pgmq.queueExists(''), throwsA(isA<PgmqException>()));
+      expect(
+        () => pgmq.createPartitionedQueue(''),
+        throwsA(isA<PgmqException>()),
+      );
+    });
+
+    test('listenNotifyInsert requires a Connection', () {
+      final pgmq = Pgmq(FakeSession());
+      expect(
+        () => pgmq.listenNotifyInsert('q'),
+        throwsA(isA<PgmqException>()),
+      );
     });
 
     test('queue name longer than 47 chars throws', () async {
@@ -301,6 +316,89 @@ void main() {
         isTrue,
       );
     });
+
+    test('queue lock and metadata are bound parameters', () async {
+      final session = FakeSession();
+      session.handlers.add((sql) {
+        if (sql.contains('acquire_queue_lock')) return emptyResult();
+        return tableResult(
+          const [
+            'queue_name',
+            'is_partitioned',
+            'is_unlogged',
+            'created_at',
+          ],
+          const [
+            ['jobs', true, false, '2024-01-01T00:00:00Z'],
+          ],
+        );
+      });
+      final pgmq = Pgmq(session);
+
+      await pgmq.acquireQueueLock('my_queue');
+      expect(
+        session.lastSql,
+        contains('pgmq.acquire_queue_lock(@queue:text)'),
+      );
+      expect(session.lastParams['queue'], 'my_queue');
+
+      final record = await pgmq.queueMetadata('my_queue');
+      expect(session.lastSql, contains('FROM pgmq.meta'));
+      expect(session.lastSql, contains('@queue:text'));
+      expect(session.lastParams['queue'], 'my_queue');
+      expect(record?.queueName, 'jobs');
+      expect(record?.isPartitioned, isTrue);
+    });
+
+    test('createPartitionedQueue ifNotExists checks pgmq.meta first', () async {
+      final session = FakeSession();
+      final seen = <String>[];
+      session.handlers.add((sql) {
+        seen.add(sql);
+        return emptyResult();
+      });
+      final pgmq = Pgmq(session);
+      await pgmq.createPartitionedQueue('q');
+      expect(seen.first, contains('FROM pgmq.meta'));
+      expect(seen.last, contains('pgmq.create_partitioned('));
+      expect(session.lastParams['partition_interval'], '10000');
+      expect(session.lastParams['retention_interval'], '100000');
+    });
+
+    test('createPartitionedQueue ifNotExists skips existing queues', () async {
+      final session = FakeSession();
+      session.handlers.add(
+        (_) => tableResult(
+          const [
+            'queue_name',
+            'is_partitioned',
+            'is_unlogged',
+            'created_at',
+          ],
+          const [
+            ['q', true, false, '2024-01-01T00:00:00Z'],
+          ],
+        ),
+      );
+      final pgmq = Pgmq(session);
+      await pgmq.createPartitionedQueue('q');
+      expect(session.executeCalls, 1);
+    });
+
+    test('createPartitionedQueue ifNotExists:false calls directly', () async {
+      final session = FakeSession();
+      final pgmq = Pgmq(session);
+      await pgmq.createPartitionedQueue(
+        'q',
+        ifNotExists: false,
+        partitionInterval: '1 day',
+        retentionInterval: '30 days',
+      );
+      expect(session.executeCalls, 1);
+      expect(session.lastSql, contains('pgmq.create_partitioned('));
+      expect(session.lastParams['partition_interval'], '1 day');
+      expect(session.lastParams['retention_interval'], '30 days');
+    });
   });
 
   group('decoding', () {
@@ -396,19 +494,33 @@ void main() {
       expect(typed.msgId, 1);
     });
 
-    test('metrics decodes 7-column and legacy 6-column rows', () async {
+    test('metrics decodes 8/7/6-column rows (v1.13 to legacy)', () async {
       final session = FakeSession();
+      session.handlers.add(
+        (_) => tableResult(QueueMetricsRow.columns8, [
+          QueueMetricsRow.values8,
+        ]),
+      );
+      final pgmq = Pgmq(session);
+      final v13 = await pgmq.metrics('q');
+      expect(v13.queueName, 'q');
+      expect(v13.queueLength, 5);
+      expect(v13.queueVisibleLength, 3);
+      expect(v13.totalMessages, 10);
+      expect(v13.defaultPartitionLength, 0);
+
+      session.handlers.clear();
       session.handlers.add(
         (_) => tableResult(QueueMetricsRow.columns7, [
           QueueMetricsRow.values7,
         ]),
       );
-      final pgmq = Pgmq(session);
       final full = await pgmq.metrics('q');
       expect(full.queueName, 'q');
       expect(full.queueLength, 5);
       expect(full.queueVisibleLength, 3);
       expect(full.totalMessages, 10);
+      expect(full.defaultPartitionLength, isNull);
 
       session.handlers.clear();
       session.handlers.add(
@@ -418,6 +530,23 @@ void main() {
       );
       final legacy = await pgmq.metrics('q');
       expect(legacy.queueVisibleLength, isNull);
+      expect(legacy.defaultPartitionLength, isNull);
+    });
+
+    test('queueMetadata returns null for missing queues', () async {
+      final session = FakeSession();
+      session.handlers.add((_) => emptyResult());
+      final pgmq = Pgmq(session);
+      expect(await pgmq.queueMetadata('missing'), isNull);
+      expect(await pgmq.queueExists('missing'), isFalse);
+    });
+
+    test('extensionVersion decodes the installed version', () async {
+      final session = FakeSession();
+      session.handlers.add((_) => singleValue('1.13.0'));
+      final pgmq = Pgmq(session);
+      expect(await pgmq.extensionVersion(), '1.13.0');
+      expect(session.lastSql, contains('pg_extension'));
     });
 
     test('listQueues decodes queue records', () async {
@@ -615,6 +744,26 @@ class MessageRow {
 }
 
 class QueueMetricsRow {
+  static const columns8 = [
+    'queue_name',
+    'queue_length',
+    'newest_msg_age_sec',
+    'oldest_msg_age_sec',
+    'total_messages',
+    'scrape_time',
+    'queue_visible_length',
+    'default_partition_length',
+  ];
+  static const values8 = [
+    'q',
+    5,
+    1,
+    60,
+    10,
+    '2024-01-01T00:00:00Z',
+    3,
+    0,
+  ];
   static const columns7 = [
     'queue_name',
     'queue_length',
